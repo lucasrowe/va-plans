@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+output/pdfs/
+output/*.csv
+.venv/
+.env

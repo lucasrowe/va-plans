@@ -1,0 +1,23 @@
+{
+  "usage_profile": {
+    "primary_care_visits": 4,
+    "specialist_visits": 8,
+    "er_visits": 1,
+    "speech_therapy_visits": 100,
+    "occupational_therapy_visits": 24,
+    "tier_1_generics_monthly": 2,
+    "tier_4_specialty_monthly": 1,
+    "inpatient_surgeries": 0
+  },
+  "standard_costs": {
+    "description": "Assumed base price (market rate) before insurance",
+    "primary_care_visit": 200,
+    "specialist_visit": 400,
+    "er_visit": 2100,
+    "speech_therapy_visit": 150,
+    "occupational_therapy_visit": 150,
+    "inpatient_surgery": 25000,
+    "tier_1_generic_cost": 20,
+    "tier_4_specialty_cost": 5000
+  }
+}

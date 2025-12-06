@@ -1,0 +1,10 @@
+{
+  "target_url": "https://www.opm.gov/healthcare-insurance/healthcare/plan-information/compare-plans/fehb/Plans?ZipCode=27705&IncludeNationwide=True&empType=a&payPeriod=c",
+  "zip_code": "27705",
+  "family_type": "Self & Family",
+  "network_type": "In-Network",
+  "pdf_download_timeout": 30,
+  "max_retries": 3,
+  "output_directory": "output",
+  "pdf_directory": "output/pdfs"
+}
