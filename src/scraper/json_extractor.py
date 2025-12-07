@@ -11,6 +11,8 @@ import re
 import logging
 from typing import Dict, List, Optional
 import pandas as pd
+from pathlib import Path
+import ast
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -205,9 +207,38 @@ class OPMJsonExtractor:
         logger.info(f"Extracted {len(plans)} plans")
         return pd.DataFrame(plans)
 
-    def scrape_all_plans(self) -> pd.DataFrame:
+    def load_oon_speech_therapy_data(self) -> pd.DataFrame:
+        """
+        Load out-of-network speech therapy data from CSV if it exists.
+
+        Returns:
+            DataFrame with OON data, or None if file doesn't exist
+        """
+        oon_path = Path('output/oon_speech_therapy.csv')
+        if not oon_path.exists():
+            logger.warning("Out-of-network speech therapy data not found. Run extract_oon_speech_therapy.py first.")
+            return None
+
+        oon_df = pd.read_csv(oon_path)
+
+        # Parse the oon_speech_therapy column (it's a string representation of a dict)
+        def parse_oon_benefit(row):
+            if pd.isna(row['oon_speech_therapy']) or row['oon_speech_therapy'] == '':
+                return None
+            try:
+                return ast.literal_eval(row['oon_speech_therapy'])
+            except:
+                return None
+
+        oon_df['oon_speech_therapy_visits'] = oon_df.apply(parse_oon_benefit, axis=1)
+        return oon_df
+
+    def scrape_all_plans(self, include_oon: bool = True) -> pd.DataFrame:
         """
         Main method to scrape all plans.
+
+        Args:
+            include_oon: Whether to include out-of-network speech therapy data
 
         Returns:
             DataFrame with all plan data
@@ -220,6 +251,30 @@ class OPMJsonExtractor:
 
         # Convert to DataFrame
         plans_df = self.extract_plans_data(carriers_data)
+
+        # Optionally merge with OON data
+        if include_oon:
+            oon_df = self.load_oon_speech_therapy_data()
+            if oon_df is not None:
+                # Create merge key
+                plans_df['merge_key'] = plans_df['plan_code'] + '|' + plans_df['plan_name']
+                oon_df['merge_key'] = oon_df['plan_code'] + '|' + oon_df['plan_name']
+
+                # Merge
+                plans_df = plans_df.merge(
+                    oon_df[['merge_key', 'oon_speech_therapy_visits', 'oon_coinsurance_rate', 'oon_notes', 'oon_found']],
+                    on='merge_key',
+                    how='left'
+                )
+
+                # Drop merge key
+                plans_df = plans_df.drop('merge_key', axis=1)
+
+                # Fill missing OON data
+                plans_df['oon_found'] = plans_df['oon_found'].fillna(False)
+                plans_df['oon_notes'] = plans_df['oon_notes'].fillna('No out-of-network coverage detected')
+
+                logger.info(f"Merged OON data: {plans_df['oon_found'].sum()} plans with out-of-network speech therapy info")
 
         return plans_df
 

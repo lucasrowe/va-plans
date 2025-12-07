@@ -155,6 +155,8 @@ class CostCalculator:
         Iterates through usage_profile, matches with standard_costs and benefit_rules,
         and calculates cost for each service type.
 
+        Special handling: Speech therapy is treated as out-of-network for all plans.
+
         Returns:
             Dictionary mapping service names to calculated costs
         """
@@ -183,7 +185,13 @@ class CostCalculator:
                 )
                 continue
 
-            # Get benefit rule for this service
+            # Special handling for speech therapy - use out-of-network rates
+            if usage_key == 'speech_therapy_visits':
+                cost = self._calculate_oon_speech_therapy(market_cost, quantity)
+                usage_breakdown[usage_key] = cost
+                continue
+
+            # Get benefit rule for this service (in-network)
             # Try exact match first, then fallbacks
             benefit_rule = self._find_benefit_rule(usage_key, benefit_rules)
 
