@@ -233,12 +233,28 @@ class OPMJsonExtractor:
         oon_df['oon_speech_therapy_visits'] = oon_df.apply(parse_oon_benefit, axis=1)
         return oon_df
 
-    def scrape_all_plans(self, include_oon: bool = True) -> pd.DataFrame:
+    def load_therapy_limits_data(self) -> pd.DataFrame:
+        """
+        Load therapy visit limits data from CSV if it exists.
+
+        Returns:
+            DataFrame with therapy limits, or None if file doesn't exist
+        """
+        limits_path = Path('output/therapy_limits.csv')
+        if not limits_path.exists():
+            logger.warning("Therapy limits data not found. Run extract_therapy_limits.py first.")
+            return None
+
+        limits_df = pd.read_csv(limits_path)
+        return limits_df
+
+    def scrape_all_plans(self, include_oon: bool = True, include_therapy_limits: bool = True) -> pd.DataFrame:
         """
         Main method to scrape all plans.
 
         Args:
             include_oon: Whether to include out-of-network speech therapy data
+            include_therapy_limits: Whether to include therapy visit limits
 
         Returns:
             DataFrame with all plan data
@@ -275,6 +291,29 @@ class OPMJsonExtractor:
                 plans_df['oon_notes'] = plans_df['oon_notes'].fillna('No out-of-network coverage detected')
 
                 logger.info(f"Merged OON data: {plans_df['oon_found'].sum()} plans with out-of-network speech therapy info")
+
+        # Optionally merge with therapy limits
+        if include_therapy_limits:
+            limits_df = self.load_therapy_limits_data()
+            if limits_df is not None:
+                # Create merge key
+                plans_df['merge_key'] = plans_df['plan_code'] + '|' + plans_df['plan_name']
+                limits_df['merge_key'] = limits_df['plan_code'] + '|' + limits_df['plan_name']
+
+                # Merge
+                plans_df = plans_df.merge(
+                    limits_df[['merge_key', 'therapy_visit_limit', 'therapy_limit_found']],
+                    on='merge_key',
+                    how='left'
+                )
+
+                # Drop merge key
+                plans_df = plans_df.drop('merge_key', axis=1)
+
+                # Fill missing therapy limit data
+                plans_df['therapy_limit_found'] = plans_df['therapy_limit_found'].fillna(False)
+
+                logger.info(f"Merged therapy limits: {plans_df['therapy_limit_found'].sum()} plans with visit limits")
 
         return plans_df
 

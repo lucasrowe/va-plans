@@ -21,13 +21,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def extract_therapy_limit_from_pdf(pdf_path: str, plan_name: str) -> dict:
+def extract_therapy_limit_from_pdf(pdf_path: str, plan_name: str, plan_option: str = None) -> dict:
     """
-    Extract therapy visit limits from a PDF brochure.
+    Extract therapy visit limits from a PDF brochure for a specific plan option.
 
     Args:
         pdf_path: Path to the PDF file
         plan_name: Name of the plan for logging
+        plan_option: Specific plan option to look for (e.g., "High Option", "Standard Option", "Basic Option")
 
     Returns:
         Dict with therapy limit information
@@ -67,11 +68,36 @@ def extract_therapy_limit_from_pdf(pdf_path: str, plan_name: str) -> dict:
                         has_therapy_in_combined = any(t in combined_lower for t in ['occupational', 'physical', 'speech'])
 
                         if has_therapy_in_combined:
+                            # If we're looking for a specific plan option, check if it's mentioned in the combined text
+                            plan_specific_match = False
+                            if plan_option:
+                                # Normalize plan option name for matching
+                                plan_option_lower = plan_option.lower()
+                                # Check if the combined text mentions this specific plan option at the START
+                                # Look for patterns like "High Option: 90 total combined" or "Standard Option: 25 total"
+                                # Use word boundary to ensure we match the plan name at the start of a phrase
+                                plan_mention_pattern = rf'\b{re.escape(plan_option_lower)}[:\s]+(\d+)\s+total\s+combined'
+                                plan_specific = re.search(plan_mention_pattern, combined_lower)
+                                if plan_specific:
+                                    # Also verify this is actually the target plan by checking if the line starts with it
+                                    # or if it's the most prominent mention (not just mentioned in passing)
+                                    match_start = plan_specific.start()
+                                    # Check if plan option appears near the start of the combined text (within first 50 chars)
+                                    if match_start < 100:  # Allow some flexibility but prioritize early matches
+                                        limit = int(plan_specific.group(1))
+                                        if 10 <= limit <= 200:
+                                            result['therapy_visit_limit'] = limit
+                                            result['therapy_limit_found'] = True
+                                            result['therapy_limit_notes'] = combined_text[:300]
+                                            logger.info(f"{plan_name} ({plan_option}): Found plan-specific limit of {limit} visits on page {page_num}")
+                                            return result
+                                        plan_specific_match = True
+
                             # Check for rehabilitative/habilitative specific patterns
                             # Look for patterns like "Up to 60 per year for rehabilitative/habilitative"
                             rehab_pattern = r'up\s+to\s+(\d+)\s+per\s+year\s+for\s+(?:per\s+condition\s+)?(?:rehabilitative|habilitative)'
                             rehab_match = re.search(rehab_pattern, combined_lower)
-                            if rehab_match:
+                            if rehab_match and not plan_option:  # Only use generic patterns if no plan option specified
                                 limit = int(rehab_match.group(1))
                                 if 10 <= limit <= 200:
                                     result['therapy_visit_limit'] = limit
@@ -80,28 +106,30 @@ def extract_therapy_limit_from_pdf(pdf_path: str, plan_name: str) -> dict:
                                     logger.info(f"{plan_name}: Found limit of {limit} visits (rehab/habilitative) on page {page_num}")
                                     return result
 
-                            # Try to extract numeric limit from combined text
-                            # Patterns: "limited to 75", "75 visits", "up to 75 visits", "maximum of 75"
-                            patterns = [
-                                r'benefits?\s+are\s+limited\s+to\s+(\d+)',
-                                r'limited?\s+to\s+(\d+)\s+visits',
-                                r'(\d+)\s+visits?\s+per\s+(?:person|calendar)',
-                                r'up\s+to\s+(\d+)\s+(?:visits|outpatient)',
-                                r'maximum\s+of\s+(\d+)\s+visits'
-                            ]
+                            # Try to extract numeric limit from combined text (only if no plan option specified)
+                            if not plan_option:
+                                # Patterns: "limited to 75", "75 visits", "up to 75 visits", "maximum of 75", "90 total combined"
+                                patterns = [
+                                    r'(\d+)\s+total\s+combined\s+(?:outpatient\s+)?(?:physical|speech|occupational)',  # "90 total combined outpatient"
+                                    r'benefits?\s+are\s+limited\s+to\s+(\d+)',
+                                    r'limited?\s+to\s+(\d+)\s+visits',
+                                    r'(\d+)\s+visits?\s+per\s+(?:person|calendar)',
+                                    r'up\s+to\s+(\d+)\s+(?:visits|outpatient)',
+                                    r'maximum\s+of\s+(\d+)\s+visits'
+                                ]
 
-                            for pattern in patterns:
-                                number_match = re.search(pattern, combined_lower)
-                                if number_match:
-                                    limit = int(number_match.group(1))
-                                    # Sanity check: therapy limits are typically 10-200 visits
-                                    if 10 <= limit <= 200:
-                                        result['therapy_visit_limit'] = limit
-                                        result['therapy_limit_found'] = True
-                                        result['therapy_limit_notes'] = combined_text[:300]
+                                for pattern in patterns:
+                                    number_match = re.search(pattern, combined_lower)
+                                    if number_match:
+                                        limit = int(number_match.group(1))
+                                        # Sanity check: therapy limits are typically 10-200 visits
+                                        if 10 <= limit <= 200:
+                                            result['therapy_visit_limit'] = limit
+                                            result['therapy_limit_found'] = True
+                                            result['therapy_limit_notes'] = combined_text[:300]
 
-                                        logger.info(f"{plan_name}: Found limit of {limit} visits on page {page_num}")
-                                        return result
+                                            logger.info(f"{plan_name}: Found limit of {limit} visits on page {page_num}")
+                                            return result
 
         if not result['therapy_limit_found']:
             logger.warning(f"{plan_name}: No therapy visit limit found in PDF")
@@ -150,14 +178,22 @@ def extract_all_therapy_limits():
             logger.warning(f"No plans found for brochure {brochure_number}")
             continue
 
-        # Extract therapy limit
-        limit_info = extract_therapy_limit_from_pdf(
-            str(pdf_file),
-            f"{plans[0]['carrier_name']} ({brochure_number})"
-        )
-
-        # Add to results for each plan in this brochure
+        # Extract therapy limit for each plan option separately
         for plan in plans:
+            # Try to extract plan-specific limit first
+            limit_info = extract_therapy_limit_from_pdf(
+                str(pdf_file),
+                f"{plan['carrier_name']} ({brochure_number})",
+                plan_option=plan['plan_name']
+            )
+
+            # If no plan-specific limit found, try generic extraction
+            if not limit_info['therapy_limit_found']:
+                limit_info = extract_therapy_limit_from_pdf(
+                    str(pdf_file),
+                    f"{plan['carrier_name']} ({brochure_number})"
+                )
+
             results.append({
                 'plan_code': brochure_number,
                 'carrier_name': plan['carrier_name'],

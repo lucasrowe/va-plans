@@ -148,6 +148,131 @@ class CostCalculator:
             )
             return 0.0
 
+    def _calculate_oon_speech_therapy(self, market_cost: float, quantity: int) -> float:
+        """
+        Calculate out-of-network speech therapy costs.
+
+        Handles therapy visit limits: visits beyond the limit are not covered and
+        paid 100% by member, and don't count toward OOP max.
+
+        For plans without OON coverage, member pays full cost.
+        For plans with OON coverage, applies coinsurance with deductible logic.
+
+        Args:
+            market_cost: Market rate per speech therapy visit
+            quantity: Number of visits
+
+        Returns:
+            Total cost for out-of-network speech therapy
+        """
+        # Check for therapy visit limit
+        therapy_limit_found = self.plan_data.get('therapy_limit_found', False)
+        therapy_visit_limit = self.plan_data.get('therapy_visit_limit', float('inf'))
+
+        if therapy_limit_found and pd.notna(therapy_visit_limit):
+            therapy_visit_limit = int(therapy_visit_limit)
+        else:
+            therapy_visit_limit = float('inf')  # No limit
+
+        # Split visits into covered and non-covered
+        covered_visits = min(quantity, therapy_visit_limit)
+        non_covered_visits = max(0, quantity - therapy_visit_limit)
+
+        # Calculate cost for covered visits (subject to OOP max)
+        covered_cost = 0.0
+        if covered_visits > 0:
+            covered_cost = self._calculate_oon_covered_visits(market_cost, covered_visits)
+
+        # Calculate cost for non-covered visits (NOT subject to OOP max)
+        non_covered_cost = 0.0
+        if non_covered_visits > 0:
+            non_covered_cost = market_cost * non_covered_visits
+            # Track this separately - it won't be subject to OOP max
+            if not hasattr(self, 'non_covered_costs'):
+                self.non_covered_costs = 0.0
+            self.non_covered_costs += non_covered_cost
+
+            logger.info(
+                f"Speech therapy (beyond {therapy_visit_limit} visit limit): "
+                f"{non_covered_visits} visits x ${market_cost} = ${non_covered_cost:.2f} "
+                f"(NOT covered, NOT subject to OOP max)"
+            )
+
+        if covered_visits > 0 and non_covered_visits > 0:
+            logger.info(
+                f"Speech therapy total: ${covered_cost + non_covered_cost:.2f} "
+                f"({covered_visits} covered + {non_covered_visits} non-covered visits)"
+            )
+
+        return covered_cost + non_covered_cost
+
+    def _calculate_oon_covered_visits(self, market_cost: float, quantity: int) -> float:
+        """
+        Calculate cost for covered out-of-network speech therapy visits.
+
+        Args:
+            market_cost: Market rate per visit
+            quantity: Number of covered visits
+
+        Returns:
+            Total cost for covered visits
+        """
+        # Check if plan has OON speech therapy data
+        oon_found = self.plan_data.get('oon_found', False)
+
+        if not oon_found:
+            # No OON coverage - member pays full cost
+            total_cost = market_cost * quantity
+            logger.info(
+                f"Speech therapy (OON - no coverage): "
+                f"{quantity} visits x ${market_cost} = ${total_cost:.2f} (member pays 100%)"
+            )
+            return total_cost
+
+        # Plan has OON coverage - get the benefit rule
+        oon_benefit = self.plan_data.get('oon_speech_therapy_visits')
+        oon_coinsurance_rate = self.plan_data.get('oon_coinsurance_rate')
+
+        if not oon_benefit or not oon_coinsurance_rate:
+            # OON data malformed, assume no coverage
+            total_cost = market_cost * quantity
+            logger.warning(
+                f"Speech therapy (OON - malformed data): "
+                f"{quantity} visits x ${market_cost} = ${total_cost:.2f} (member pays 100%)"
+            )
+            return total_cost
+
+        # Apply OON coinsurance with deductible logic (same as in-network coinsurance)
+        total_market_cost = market_cost * quantity
+
+        if self.deductible_remaining > 0:
+            # Pay full cost up to remaining deductible
+            deductible_portion = min(total_market_cost, self.deductible_remaining)
+            self.deductible_remaining -= deductible_portion
+            self.deductible_paid += deductible_portion
+
+            # Pay coinsurance on remaining amount
+            remaining_market_cost = total_market_cost - deductible_portion
+            coinsurance_portion = remaining_market_cost * oon_coinsurance_rate
+
+            total_cost = deductible_portion + coinsurance_portion
+
+            logger.info(
+                f"Speech therapy (OON - {oon_coinsurance_rate*100:.0f}% coinsurance): "
+                f"{quantity} visits, Market=${total_market_cost:.2f}, Deductible=${deductible_portion:.2f}, "
+                f"Coinsurance=${coinsurance_portion:.2f}, Total=${total_cost:.2f}"
+            )
+        else:
+            # Deductible already met, only pay coinsurance
+            total_cost = total_market_cost * oon_coinsurance_rate
+            logger.info(
+                f"Speech therapy (OON - {oon_coinsurance_rate*100:.0f}% coinsurance): "
+                f"{quantity} visits, Market=${total_market_cost:.2f}, Total=${total_cost:.2f} "
+                f"(deductible already met)"
+            )
+
+        return total_cost
+
     def calculate_usage_cost(self) -> Dict[str, float]:
         """
         Calculate variable costs for all service types in usage profile.
@@ -318,16 +443,18 @@ class CostCalculator:
 
         Returns:
             Dictionary containing:
-                - total_annual_cost: Premium + capped variable costs
+                - total_annual_cost: Premium + capped variable costs + non-covered costs
                 - premium_cost: Annual premium
                 - medical_drug_spend: Variable costs (capped at OOP max)
                 - deductible_paid: Amount of deductible consumed
                 - usage_breakdown: Dict of per-service costs
                 - variable_cost_raw: Variable costs before OOP cap
+                - non_covered_costs: Costs for visits beyond limits (not subject to OOP max)
         """
         # Reset deductible tracking
         self.deductible_remaining = self.plan_data.get('annual_deductible', 0)
         self.deductible_paid = 0
+        self.non_covered_costs = 0.0
 
         # Calculate premium
         premium_cost = self.calculate_premium_cost()
@@ -336,19 +463,29 @@ class CostCalculator:
         usage_breakdown = self.calculate_usage_cost()
         variable_cost_raw = sum(usage_breakdown.values())
 
-        # Apply OOP cap
-        variable_cost_capped = self.apply_oop_cap(variable_cost_raw)
+        # Separate covered vs non-covered costs
+        # Non-covered costs were tracked separately during calculation
+        covered_variable_cost = variable_cost_raw - self.non_covered_costs
+
+        # Apply OOP cap ONLY to covered costs
+        covered_cost_capped = self.apply_oop_cap(covered_variable_cost)
+
+        # Total medical/drug spend includes capped covered costs + ALL non-covered costs
+        total_medical_drug_spend = covered_cost_capped + self.non_covered_costs
 
         # Total annual cost
-        total_annual_cost = premium_cost + variable_cost_capped
+        total_annual_cost = premium_cost + total_medical_drug_spend
 
         result = {
             'total_annual_cost': round(total_annual_cost, 2),
             'premium_cost': round(premium_cost, 2),
-            'medical_drug_spend': round(variable_cost_capped, 2),
+            'medical_drug_spend': round(total_medical_drug_spend, 2),
             'deductible_paid': round(self.deductible_paid, 2),
             'usage_breakdown': {k: round(v, 2) for k, v in usage_breakdown.items()},
-            'variable_cost_raw': round(variable_cost_raw, 2)
+            'variable_cost_raw': round(variable_cost_raw, 2),
+            'non_covered_costs': round(self.non_covered_costs, 2),
+            'covered_cost_before_cap': round(covered_variable_cost, 2),
+            'covered_cost_after_cap': round(covered_cost_capped, 2)
         }
 
         logger.info(
