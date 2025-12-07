@@ -286,7 +286,13 @@ class CostCalculator:
             Dictionary mapping service names to calculated costs
         """
         usage_breakdown = {}
-        benefit_rules = self.plan_data.get('benefit_rules', {})
+
+        # Build benefit_rules dict from plan_data columns
+        # The JSON extractor stores benefits as direct columns, not in a nested dict
+        benefit_rules = {}
+        for key, value in self.plan_data.items():
+            if isinstance(value, dict) and 'type' in value and 'value' in value:
+                benefit_rules[key] = value
 
         for usage_key, quantity in self.usage_profile.items():
             if quantity <= 0:

@@ -1,7 +1,7 @@
 {
   "usage_profile": {
-    "primary_care_visits": 4,
-    "specialist_visits": 8,
+    "primary_care_visits": 12,
+    "specialist_visits": 10,
     "er_visits": 1,
     "speech_therapy_visits": 100,
     "occupational_therapy_visits": 24,
