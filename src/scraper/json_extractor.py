@@ -160,15 +160,17 @@ class OPMJsonExtractor:
                 rate = family_enrollment.get('Rate', {})
                 biweekly_premium = rate.get('Employee', 0)
 
-                # Extract plan costs
-                plan_costs = family_enrollment.get('PlanCosts', {})
-                deductible = plan_costs.get('Calendar Year Deductible', {}).get('NumericValue', 0)
-                oop_max = plan_costs.get('Catastrophic Limit', {}).get('NumericValue', 0)
-
                 # Extract benefits from tiers
                 tiers = plan.get('Tiers', {})
                 in_network = tiers.get('In-network', {})
                 benefits = in_network.get('Benefits', {})
+
+                # Extract plan costs from In-network tier's enrollment types
+                in_network_enrollment_types = in_network.get('EnrollmentTypes', {})
+                in_network_family = in_network_enrollment_types.get('Self & Family', {})
+                plan_costs = in_network_family.get('PlanCosts', {})
+                deductible = plan_costs.get('Calendar Year Deductible', {}).get('NumericValue', 0)
+                oop_max = plan_costs.get('Catastrophic Limit', {}).get('NumericValue', 0)
 
                 # Create plan record
                 plan_record = {
